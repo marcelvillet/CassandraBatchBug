@@ -13,6 +13,7 @@ namespace CassandraBatch
         public static readonly DateTime UnixEpoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
         public int id;
+        public string name;
         public DateTime csharpDate;
         public DateTime cqlDate;
         public Guid tuuid;
@@ -47,6 +48,7 @@ namespace CassandraBatch
 
             sb.AppendLine();
             sb.AppendLine(string.Format("    id                : {0}", id));
+            sb.AppendLine(string.Format("    name              : {0}", name));
             sb.AppendLine(string.Format("    csharpDate        : {0}", csharpDate.ToString(TimestampFmt)));
             sb.AppendLine(string.Format("    cqlDate           : {0}", cqlDate.ToString(TimestampFmt)));
             sb.AppendLine(string.Format("    tuuid             : {0}", tuuid));

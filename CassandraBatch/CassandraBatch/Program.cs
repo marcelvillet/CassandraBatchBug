@@ -7,6 +7,22 @@ namespace CassandraBatch
 {
     class Program
     {
+        static bool Debug = false;
+        static ISession Session { get; set; }
+        static PreparedStatement _ps = null;
+        static PreparedStatement Ps
+        {
+            get
+            {
+                if (_ps == null)
+                {
+                    _ps = Session.Prepare("INSERT INTO test (id, name, csharpDate, cqlDate, tuuid) VALUES (?, ?, ?, toUnixTimestamp(now()), now())");
+                }
+
+                return _ps;
+            }
+        }
+
         static void Main(string[] args)
         {
             /*
@@ -36,20 +52,21 @@ namespace CassandraBatch
             Builder builder = Cluster.Builder()
                     .AddContactPoints("10.0.0.68")
                     .WithCompression(CompressionType.Snappy)
-                    .WithDefaultKeyspace("ospreypro_mv")
                     .WithLoadBalancingPolicy(new TokenAwarePolicy(new DCAwareRoundRobinPolicy()))
                     .WithReconnectionPolicy(new ConstantReconnectionPolicy(100L))
                     .WithCredentials("sys", "cassandra"); ;
 
             var cluster = builder.Build();
-            var session = cluster.Connect("ospreypro_mv");
+            Session = cluster.Connect("ospreypro_v1");
 
             Console.WriteLine("Connected");
 
+            var tableTruncateCql = "TRUNCATE test";
             var tableDropCql = "DROP TABLE IF EXISTS test";
             var tableCreateCql = @"
 CREATE TABLE test (
     id           int,
+    name         text,
     csharpDate   timestamp,
     cqlDate      timestamp,
     tuuid        timeuuid,
@@ -59,13 +76,13 @@ CREATE TABLE test (
 
             Console.WriteLine("Dropping table...");
 
-            session.Execute(tableDropCql);
+            Session.Execute(tableDropCql);
 
             Console.WriteLine("Dropped");
 
             Console.WriteLine("Creating table...");
 
-            session.Execute(tableCreateCql);
+            Session.Execute(tableCreateCql);
 
             Console.WriteLine("Created");
 
@@ -77,27 +94,43 @@ CREATE TABLE test (
             //    Test(session, true, true, i + 4);
             //}
 
-            var rec1 = Test(session, true, false, 1);
-            var rec2 = Test(session, false, false, 2);
+            var rec1 = ShowWriteTimes(true, false, 1);
+            var rec2 = ShowWriteTimes(false, false, 2);
 
             var ts = rec2.writeDateTime - rec1.writeDateTime;
 
             Console.WriteLine("Write time diff: " + ts);
+            Console.WriteLine("");
 
-            session.Execute(tableDropCql);
+            Session.Execute(tableTruncateCql);
+
+            ShowDoubleInserts(10, true, true, false);
+            Console.WriteLine("");
+
+            ShowDoubleInserts(20, false, false, false);
+            Console.WriteLine("");
+
+            ShowDoubleInserts(30, false, true, false);
+            Console.WriteLine("");
+
+            ShowDoubleInserts(40, true, false, false);
+            Console.WriteLine("");
+
+            Session.Execute(tableDropCql);
 
             Console.WriteLine("Press ENTER to exit");
             Console.ReadLine();
         }
 
-        private static void Insert(ISession session, bool useBatch, bool useAsync, int id)
+        private static void Insert(bool useBatch, bool useAsync, int id, string name = "")
         {
-            Console.WriteLine("ENTER: Insert " + DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.fffZ"));
-            
-            Console.WriteLine(string.Format("Inserting: useBatch={0}, useAsync={1}, id={2}", useBatch, useAsync, id));
+            if (Debug)
+                Console.WriteLine("ENTER: Insert " + DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.fffZ"));
 
-            var ps = session.Prepare("INSERT INTO test (id, csharpDate, cqlDate, tuuid) VALUES (?, ?, toUnixTimestamp(now()), now())");
-            var bs = ps.Bind(id, DateTime.UtcNow);
+            if (Debug)
+                Console.WriteLine(string.Format("Inserting: useBatch={0}, useAsync={1}, id={2}, name={3}", useBatch, useAsync, id, name));
+
+            var bs = Ps.Bind(id, name, DateTime.UtcNow);
             IStatement statement;
 
             if (useBatch)
@@ -118,57 +151,35 @@ CREATE TABLE test (
 
             if (useAsync)
             {
-                var task = session.ExecuteAsync(statement);
+                var task = Session.ExecuteAsync(statement);
                 task.Wait();
             }
             else
             {
-                session.Execute(statement);
+                Session.Execute(statement);
             }
 
-            Console.WriteLine("EXIT: Insert " + DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.fffZ"));
+            if (Debug)
+                Console.WriteLine("EXIT: Insert " + DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss.fffZ"));
         }
 
-        private static async Task InsertAsync(ISession session, bool useBatch, int id)
+        private static TestModel Select(int id)
         {
-            Console.WriteLine(string.Format("Inserting: useBatch={0}, id={1}", useBatch, id));
+            if (Debug)
+                Console.WriteLine(string.Format("Selecting: id={0}", id));
 
-            var ps = session.Prepare("INSERT INTO test (id, csharpDate, cqlDate, tuuid) VALUES (?, ?, toUnixTimestamp(now()), now())");
-            var bs = ps.Bind(id, DateTime.UtcNow);
-
-            if (useBatch)
-            {
-                BatchStatement batch = new BatchStatement();
-
-                batch.SetBatchType(BatchType.Logged);
-
-                batch.Add(bs);
-
-                await session.ExecuteAsync(bs);
-            }
-            else
-            {
-                await session.ExecuteAsync(bs);
-            }
-        }
-
-        private static TestModel Select(ISession session, int id)
-        {
-            Console.WriteLine(string.Format("Selecting: id={0}", id));
-
-            var rowset = session.Execute("SELECT id, csharpDate, cqlDate, tuuid, writetime(tuuid) AS wt FROM test WHERE id = " + id);
+            var rowset = Session.Execute("SELECT id, name, csharpDate, cqlDate, tuuid, writetime(tuuid) AS wt FROM test WHERE id = " + id);
 
             foreach (var row in rowset)
             {
                 var test = new TestModel();
 
                 test.id = row.GetValue<int>("id");
+                test.name = row.GetValue<string>("name");
                 test.csharpDate = row.GetValue<DateTime>("csharpdate");
                 test.cqlDate = row.GetValue<DateTime>("cqldate");
                 test.tuuid = row.GetValue<Guid>("tuuid");
                 test.writeMSecs = row.GetValue<long>("wt");
-
-                Console.WriteLine(test);
 
                 return test;
             }
@@ -176,13 +187,13 @@ CREATE TABLE test (
             return null;
         }
 
-        private static TestModel Test(ISession session, bool useBatch, bool useAsync, int id)
+        private static TestModel ShowWriteTimes(bool useBatch, bool useAsync, int id)
         {
-            Console.WriteLine("Running test with useBatch=" + useBatch);
+            Console.WriteLine($"Running {"nameof(ShowWriteTimes)"} with useBatch={useBatch}");
 
-            Insert(session, useBatch, useAsync, id);
+            Insert(useBatch, useAsync, id);
 
-            var rec = Select(session, id);
+            var rec = Select(id);
 
             if (rec == null)
             {
@@ -190,7 +201,7 @@ CREATE TABLE test (
 
                 Thread.Sleep(2000);
 
-                rec = Select(session, id);
+                rec = Select(id);
 
                 if (rec == null)
                 {
@@ -198,7 +209,26 @@ CREATE TABLE test (
                 }
             }
 
+            if (rec != null)
+            {
+                Console.WriteLine(rec);
+            }
+
             return rec;
+        }
+
+        private static void ShowDoubleInserts(int id, bool useBatch1, bool useBatch2, bool useAsync)
+        {
+            Console.WriteLine($"Running {nameof(ShowDoubleInserts)} with useBatch1={useBatch1} and useBatch2={useBatch2} and useAsync={useAsync}");
+
+            string name1 = "Name1";
+            string name2 = "Name2";
+
+            Insert(useBatch1, useAsync, id, name1);
+            Insert(useBatch2, useAsync, id, name2);
+            var rec = Select(id);
+
+            Console.WriteLine($"> Name = {rec.name} (should be {name2})...{(rec.name == name2 ? "PASS" : "FAIL")}");
         }
     }
 }
